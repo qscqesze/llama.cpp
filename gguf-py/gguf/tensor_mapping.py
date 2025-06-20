@@ -143,6 +143,7 @@ class TensorNameMap:
             "transformer.h.{bid}.ln_attn",                  # falcon40b
             "encoder.layer.{bid}.layer_norm_1",             # jina-v2-code
             "rwkv.blocks.{bid}.ln2",                        # rwkv6
+            "model.layers.{bid}.self_attn.norm",            # minimax_m1
             "model.layers.{bid}.ln2",                       # rwkv7
         ),
 
@@ -238,6 +239,7 @@ class TensorNameMap:
             "encoder.layers.{bid}.self_attention.dense",                    # chatglm
             "transformer.layers.{bid}.attn.out_proj",                       # openelm
             "transformer.h.{bid}.attn.attention.out_proj",                  # exaone
+            "model.layers.{bid}.self_attn.out_proj", # minimax_m1
             "model.layers.{bid}.self_attn.o_proj",                          # llama4
             "transformer_encoder.{bid}.wo",                                 # neobert
         ),
@@ -262,6 +264,10 @@ class TensorNameMap:
             "layers.{bid}.attention.inner_attention.rope.freqs",       # llama-pth
             "model.layers.layers.{bid}.self_attn.rotary_emb.inv_freq", # plamo
             "transformer.h.{bid}.attn.rotary_emb.inv_freq",            # codeshell
+        ),
+
+        MODEL_TENSOR.ATTN_GATE: (
+            "model.layers.{bid}.self_attn.output_gate",     # minimax_m1
         ),
 
         # Feed-forward norm
