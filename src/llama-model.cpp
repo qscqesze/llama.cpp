@@ -13178,7 +13178,48 @@ struct llm_build_wavtokenizer_dec : public llm_graph_context {
     }
 };
 
+using llm_build_cb = std::function<void(struct ggml_tensor * cur, const char * name, int nl)>;
+
+static struct ggml_tensor * llm_build_norm(
+        struct ggml_context * ctx,
+         struct ggml_tensor * cur,
+        const llama_hparams & hparams,
+         struct ggml_tensor * mw,
+         struct ggml_tensor * mb,
+              llm_norm_type   type,
+         const llm_build_cb & cb,
+                        int   il) {
+    switch (type) {
+        case LLM_NORM:       cur = ggml_norm      (ctx, cur, hparams.f_norm_eps);     break;
+        case LLM_NORM_RMS:   cur = ggml_rms_norm  (ctx, cur, hparams.f_norm_rms_eps); break;
+        case LLM_NORM_GROUP:
+            {
+                cur = ggml_reshape_3d(ctx, cur, cur->ne[0], 1, cur->ne[1]);
+                cur = ggml_group_norm(ctx, cur, hparams.n_norm_groups, hparams.f_norm_group_eps);
+                cur = ggml_reshape_2d(ctx, cur, cur->ne[0],    cur->ne[2]);
+            } break;
+    }
+
+    if (mw || mb) {
+        cb(cur, "norm", il);
+    }
+
+    if (mw) {
+        cur = ggml_mul(ctx, cur, mw);
+        if (mb) {
+            cb(cur, "norm_w", il);
+        }
+    }
+
+    if (mb) {
+        cur = ggml_add(ctx, cur, mb);
+    }
+
+    return cur;
+}
+
 struct llm_build_minimax : public llm_graph_context {
+
     llm_build_minimax(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {
         // mutable variable, needed during the last layer of the computation to skip unused tokens
         int32_t n_tokens = this->n_tokens;
@@ -13189,6 +13230,8 @@ struct llm_build_minimax : public llm_graph_context {
         const int64_t n_seqs  = ubatch.n_seqs;
         const int64_t n_seq_tokens = ubatch.n_seq_tokens;
         const int64_t n_seq_max = cparams.n_seq_max;
+
+        auto inp = std::make_unique<llm_graph_input_attn_no_cache>(hparams, cparams);
 
         GGML_ASSERT(n_seqs != 0);
         GGML_ASSERT(ubatch.equal_seqs);
@@ -13203,14 +13246,16 @@ struct llm_build_minimax : public llm_graph_context {
         struct ggml_tensor * inp_pos = build_inp_pos();
 
         // KQ_mask (mask for 1 head, it will be broadcasted to all heads)
-        struct ggml_tensor * KQ_mask = build_inp_KQ_mask();
+        struct ggml_tensor * KQ_mask = inp->get_kq_mask();
+
+        auto inp_decay = build_inp_decay();
 
         // slope tensor
-        struct ggml_tensor * slopes = llm_build_inp_slopes();
-        struct ggml_tensor * q_decay_exp = (n_seq_tokens != 1 ? llm_build_inp_q_decay() : nullptr);
-        struct ggml_tensor * k_decay_exp = (n_seq_tokens != 1 ? llm_build_inp_k_decay() : nullptr);
-        struct ggml_tensor * diag_decay_exp = (n_seq_tokens != 1 ? llm_build_inp_diag_decay() : nullptr);
-        struct ggml_tensor * seq_ids = (n_seqs > 1 ? llm_build_inp_seq_ids() : nullptr);
+        struct ggml_tensor * slopes = inp_decay->inp_slopes;
+        struct ggml_tensor * q_decay_exp = (n_seq_tokens != 1 ? inp_decay->inp_q_decay : nullptr);
+        struct ggml_tensor * k_decay_exp = (n_seq_tokens != 1 ? inp_decay->inp_k_decay : nullptr);
+        struct ggml_tensor * diag_decay_exp = (n_seq_tokens != 1 ? inp_decay->inp_diag_decay : nullptr);
+        struct ggml_tensor * seq_ids = (n_seqs > 1 ? inp_decay->inp_seq_ids : nullptr);
 
         for (int il = 0; il < n_layer; ++il) {
             struct ggml_tensor * inpSA = inpL;
@@ -13218,7 +13263,8 @@ struct llm_build_minimax : public llm_graph_context {
             // norm
             cur = llm_build_norm(ctx0, inpL, hparams,
                     model.layers[il].attn_norm, NULL,
-                    LLM_NORM_RMS, cb, il);
+                    LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
+
             cb(cur, "attn_norm", il);
 
             struct ggml_tensor * residual = cur;
@@ -13226,13 +13272,13 @@ struct llm_build_minimax : public llm_graph_context {
             // self-attention
             if (il % 8 == 7) {
                 // compute Q and K and RoPE them
-                struct ggml_tensor * Qcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wq, cur);
+                struct ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
                 cb(Qcur, "Qcur", il);
 
-                struct ggml_tensor * Kcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wk, cur);
+                struct ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
                 cb(Kcur, "Kcur", il);
 
-                struct ggml_tensor * Vcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wv, cur);
+                struct ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
                 cb(Vcur, "Vcur", il);
 
                 Qcur = ggml_view_3d(ctx0, Qcur, n_embd_head, n_head, n_tokens, ggml_element_size(Qcur)*n_embd_head, ggml_element_size(Qcur)*n_embd_head*n_head, 0);
@@ -13253,9 +13299,10 @@ struct llm_build_minimax : public llm_graph_context {
                 );
                 cb(k_rope, "k_rope", il);
 
-                cur = llm_build_kv(ctx0, lctx, kv_self, gf,
+                cur = build_attn(inp.get(), gf,
                         model.layers[il].wo, NULL,
-                        k_rope, Vcur, q_rope, KQ_mask, n_tokens, kv_head, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il);
+                        q_rope, k_rope, Vcur, NULL, NULL, 1.0f/sqrtf(float(n_embd_head)), il);
+                        
             } else {
                 float slope_scale = 1.0 - 1.0 * il / (n_layer - 1) + 1e-5;
                 struct ggml_tensor * slope_rate = ggml_scale(ctx0, slopes, slope_scale);
@@ -13263,7 +13310,7 @@ struct llm_build_minimax : public llm_graph_context {
 
                 cur = ggml_reshape_3d(ctx0, cur, cur->ne[0], n_seq_tokens, n_seqs);
 
-                struct ggml_tensor * QKVcur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wqkv, cur);
+                struct ggml_tensor * QKVcur = build_lora_mm(model.layers[il].wqkv, cur);
                 cb(QKVcur, "QKVcur", il);
 
                 QKVcur = ggml_silu(ctx0, QKVcur);
@@ -13279,7 +13326,9 @@ struct llm_build_minimax : public llm_graph_context {
                 cb(Kcur, "Kcur", il);
                 cb(Vcur, "Vcur", il);
 
-                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_self.kv_l[il], n_embd_head*n_embd_head*n_head, n_seq_max, ggml_element_size(kv_self.kv_l[il])*n_embd_head*n_embd_head*n_head, 0);
+                const auto * kv_state = static_cast<const llama_kv_cache_unified_state *>(mstate);
+                struct ggml_tensor * kv_cache_tensor = kv_state->get_k(ctx0, il);
+                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_cache_tensor, n_embd_head*n_embd_head*n_head, n_seq_max, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, 0);
                 cb(kv_old, "kv_old_2d", il);
 
                 // optimization for a single sequence
@@ -13288,7 +13337,7 @@ struct llm_build_minimax : public llm_graph_context {
                     cb(kv_old, "kv_old_2d_sel", il);
                 }
 
-                kv_old = ggml_view_4d(ctx0, kv_old, n_embd_head, n_embd_head, n_head, n_seqs, ggml_element_size(kv_self.kv_l[il])*n_embd_head, ggml_element_size(kv_self.kv_l[il])*n_embd_head*n_embd_head, ggml_element_size(kv_self.kv_l[il])*n_embd_head*n_embd_head*n_head, 0);
+                kv_old = ggml_view_4d(ctx0, kv_old, n_embd_head, n_embd_head, n_head, n_seqs, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, 0);
                 cb(kv_old, "kv_old", il);
 
                 struct ggml_tensor * qkv = nullptr;
@@ -13398,11 +13447,11 @@ struct llm_build_minimax : public llm_graph_context {
                 }
 
                 // store new kv states for each processed sequence
-                struct ggml_tensor * kv_self_l_v = ggml_view_4d(ctx0, kv_self.kv_l[il],
+                struct ggml_tensor * kv_self_l_v = ggml_view_4d(ctx0, kv_cache_tensor,
                     n_embd_head, n_embd_head, n_head, n_seq_max,
-                    ggml_element_size(kv_self.kv_l[il])*n_embd_head,
-                    ggml_element_size(kv_self.kv_l[il])*n_embd_head*n_embd_head,
-                    ggml_element_size(kv_self.kv_l[il])*n_embd_head*n_embd_head*n_head,
+                    ggml_element_size(kv_cache_tensor)*n_embd_head,
+                    ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head,
+                    ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head,
                     0);
 
                 for (uint64_t s = 0; s < ubatch.n_seqs; s++) {
@@ -13418,12 +13467,12 @@ struct llm_build_minimax : public llm_graph_context {
                 qkv = ggml_view_3d(ctx0, qkv, qkv->ne[0]*qkv->ne[1], qkv->ne[2], qkv->ne[3], ggml_element_size(qkv)*qkv->ne[0]*qkv->ne[1], ggml_element_size(qkv)*qkv->ne[0]*qkv->ne[1]*qkv->ne[2], 0);
 
                 // norm
-                struct ggml_tensor * qkv_norm = llm_build_norm(ctx0, qkv, hparams,
-                        model.layers[il].attn_norm_2, NULL,
-                        LLM_NORM_RMS, cb, il);
+                struct ggml_tensor * qkv_norm = llm_build_norm(ctx0, inpL, hparams,
+                model.layers[il].attn_norm, NULL,
+                LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
                 cb(qkv_norm, "qkv_norm", il);
 
-                struct ggml_tensor * g = llm_build_lora_mm(lctx, ctx0, model.layers[il].wg, cur);
+                struct ggml_tensor * g = build_lora_mm(model.layers[il].wg, cur);
                 cb(g, "g", il);
 
                 g = ggml_sigmoid(ctx0, g);
@@ -13431,7 +13480,7 @@ struct llm_build_minimax : public llm_graph_context {
 
                 cur = ggml_mul(ctx0, g, qkv_norm);
 
-                cur = llm_build_lora_mm(lctx, ctx0, model.layers[il].wo, cur);
+                cur = build_lora_mm(model.layers[il].wo, cur);
                 cb(cur, "attn_out", il);
 
                 cur = ggml_reshape_2d(ctx0, cur, cur->ne[0], n_seq_tokens*n_seqs);
@@ -13456,12 +13505,12 @@ struct llm_build_minimax : public llm_graph_context {
             // MoE
             cur = llm_build_norm(ctx0, ffn_inp, hparams,
                     model.layers[il].ffn_norm, NULL,
-                    LLM_NORM_RMS, cb, il);
+                    LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
             cb(cur, "ffn_norm", il);
 
             residual = cur;
 
-            cur = llm_build_moe_ffn(ctx0, lctx, cur,
+            cur = build_moe_ffn(cur,
                     model.layers[il].ffn_gate_inp,
                     model.layers[il].ffn_up_exps,
                     model.layers[il].ffn_gate_exps,
@@ -13471,7 +13520,7 @@ struct llm_build_minimax : public llm_graph_context {
                     LLM_FFN_SILU, true,
                     false, 0.0,
                     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX,
-                    cb, il);
+                    il);
             cb(cur, "ffn_moe_out", il);
 
             residual = ggml_scale(ctx0, residual, hparams.f_residual_scale);
@@ -13480,7 +13529,7 @@ struct llm_build_minimax : public llm_graph_context {
             cur = ggml_add(ctx0, cur, residual);
             cb(cur, "ffn_out", il);
 
-            cur = lctx.cvec.apply_to(ctx0, cur, il);
+            cur = build_cvec(cur, il);
             cb(cur, "l_out", il);
 
             // input for next layer
@@ -13489,13 +13538,13 @@ struct llm_build_minimax : public llm_graph_context {
 
         cur = inpL;
 
-        cur = llm_build_norm(ctx0, cur, hparams,
+        cur = build_norm(cur,
                 model.output_norm, NULL,
-                LLM_NORM_RMS, cb, -1);
+                LLM_NORM_RMS, -1);
         cb(cur, "result_norm", -1);
 
         // lm_head
-        cur = llm_build_lora_mm(lctx, ctx0, model.output, cur);
+        cur = build_lora_mm(model.output, cur);
         cb(cur, "result_output", -1);
 
         ggml_build_forward_expand(gf, cur);
@@ -14460,7 +14509,7 @@ llm_graph_result_ptr llama_model::build_graph(
             } break;
         case LLM_ARCH_MINIMAXM1:
             {
-                llm = std::make_unique<llm_build_minimax_m1>(*this, params, gf);
+                llm = std::make_unique<llm_build_minimax>(*this, params, gf);
             } break;
         case LLM_ARCH_PLM:
             {

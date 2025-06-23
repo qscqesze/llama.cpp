@@ -1019,6 +1019,36 @@ ggml_tensor * llm_graph_context::build_inp_cross_embd() const {
     return cur;
 }
 
+llm_graph_input_decay * llm_graph_context::build_inp_decay() const {
+    auto inp = std::make_unique<llm_graph_input_decay>(hparams);
+
+    const int64_t n_head = hparams.n_head();
+    const int64_t n_seq_tokens = ubatch.n_seq_tokens;
+    const int64_t n_seqs = ubatch.n_seqs;
+
+    // inp_slopes: F32 [n_head]
+    inp->inp_slopes = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head);
+    ggml_set_input(inp->inp_slopes);
+
+    // inp_q_decay: F32 [n_head, n_seq_tokens]
+    inp->inp_q_decay = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_head, n_seq_tokens);
+    ggml_set_input(inp->inp_q_decay);
+
+    // inp_k_decay: F32 [n_head, n_seq_tokens]
+    inp->inp_k_decay = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_head, n_seq_tokens);
+    ggml_set_input(inp->inp_k_decay);
+
+    // inp_diag_decay: F32 [n_head, n_seq_tokens, n_seq_tokens]
+    inp->inp_diag_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_head, n_seq_tokens, n_seq_tokens);
+    ggml_set_input(inp->inp_diag_decay);
+
+    // inp_seq_ids: I32 [n_seqs]
+    inp->inp_seq_ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_seqs);
+    ggml_set_input(inp->inp_seq_ids);
+
+    return (llm_graph_input_decay *) res->add_input(std::move(inp));
+}
+
 ggml_tensor * llm_graph_context::build_inp_pos_bucket_enc() const {
     auto inp = std::make_unique<llm_graph_input_pos_bucket>(hparams);
 
