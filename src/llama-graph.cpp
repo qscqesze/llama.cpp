@@ -358,6 +358,89 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
     }
 }
 
+void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
+    if (inp_slopes) {
+        const int64_t n_head = hparams.n_head();
+
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_slopes->buffer));
+
+        float * data = (float *) inp_slopes->data;
+
+        float start = powf(2, -powf(2, -(log2f(n_head) - 3)));
+        float ratio = start;
+
+        for (int h = 0; h < n_head; ++h) {
+            data[h] = start * powf(ratio, h);
+        }
+    }
+
+    if (inp_q_decay) {
+        const int64_t n_head = hparams.n_head();
+        const int64_t n_seq_tokens = ubatch->n_seq_tokens;
+
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_q_decay->buffer));
+
+        float * slopes = (float *) inp_slopes->data;
+        float * data = (float *) inp_q_decay->data;
+
+        for (int i = 0; i < n_seq_tokens; ++i) {
+            for (int h = 0; h < n_head; ++h) {
+                data[i * n_head + h] = -slopes[h] * (i + 1);
+            }
+        }
+    }
+
+    if (inp_k_decay) {
+        const int64_t n_head = hparams.n_head();
+        const int64_t n_seq_tokens = ubatch.n_seq_tokens;
+
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_k_decay->buffer));
+
+        float * slopes = (float *) inp_slopes->data;
+        float * data = (float *) inp_k_decay->data;
+
+        for (int i = 0; i < n_seq_tokens; ++i) {
+            for (int h = 0; h < n_head; ++h) {
+                data[i * n_head + h] = -slopes[h] * (n_seq_tokens - i - 1);
+            }
+        }
+    }
+
+    if (inp_diag_decay) {
+        const int64_t n_head = hparams.n_head();
+        const int64_t n_seq_tokens = ubatch->n_seq_tokens;
+
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_diag_decay->buffer));
+
+        float * slopes = (float *) inp_slopes->data;
+        float * data = (float *) inp_diag_decay->data;
+
+        for (int j = 0; j < n_seq_tokens; ++j) {
+            for (int i = 0; i < n_seq_tokens; ++i) {
+                int index = j - i;
+                for (int h = 0; h < n_head; ++h) {
+                    float s_index = index >= 0 ? -slopes[h] * index : -INFINITY;
+                    data[j * n_head * n_seq_tokens + i * n_head + h] = s_index;
+                }
+            }
+        }
+    }
+
+    if (inp_seq_ids) {
+        const int64_t n_seqs = ubatch->n_seqs;
+
+        GGML_ASSERT(n_seqs != 0);
+
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_seq_ids->buffer));
+
+        uint32_t * data = (uint32_t *) inp_seq_ids->data;
+
+        for (int s = 0; s < n_seqs; ++s) {
+            data[s] = (ubatch->seq_id ? ubatch->seq_id[s][0] : 0);
+        }
+    }
+}
+
 //
 // llm_graph_context
 //

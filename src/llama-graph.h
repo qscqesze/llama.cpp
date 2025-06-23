@@ -301,6 +301,22 @@ public:
     const llama_cross * cross = nullptr;
 };
 
+class llm_graph_input_decay : public llm_graph_input_i {
+public:
+    llm_graph_input_decay(const llama_hparams & hparams) : hparams(hparams) {}
+    virtual ~llm_graph_input_decay() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    struct ggml_tensor * inp_slopes;        // F32 [n_head]
+    struct ggml_tensor * inp_q_decay;       // F32 [n_batch, n_head]
+    struct ggml_tensor * inp_k_decay;       // F32 [n_batch, n_head]
+    struct ggml_tensor * inp_diag_decay;    // F32 [n_batch, n_batch, n_head]
+    struct ggml_tensor * inp_seq_ids;       // F32 [n_batch, n_batch, n_head]
+
+    const llama_hparams & hparams;
+};
+
 class llm_graph_input_mem_hybrid : public llm_graph_input_i {
 public:
     llm_graph_input_mem_hybrid(
