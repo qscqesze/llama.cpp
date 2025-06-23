@@ -103,7 +103,7 @@ public:
     // per layer
     std::vector<ggml_tensor *> r_l;
     std::vector<ggml_tensor *> s_l;
-
+    std::vector<ggml_tensor *> kv_l;
 private:
     //const llama_model & model;
     const llama_hparams & hparams;

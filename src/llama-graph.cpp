@@ -348,7 +348,7 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
     const int64_t n_rs = mem_state->get_state_recr()->get_n_rs();
 
     if (s_copy) {
-        GGML_ASSERT(ggml_backend_buffer_is_host(s_copy->buffer));
+        GGML_ASSERT(ggml_backend_buffer_is_host(s_copy->buffer));   
         int32_t * data = (int32_t *) s_copy->data;
 
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n

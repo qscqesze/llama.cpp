@@ -24,6 +24,8 @@ llama_memory_recurrent::llama_memory_recurrent(
                  uint32_t    mem_size,
                  uint32_t    n_seq_max) : hparams(model.hparams), n_seq_max(n_seq_max) {
     const int32_t n_layer = hparams.n_layer;
+    const int n_head = hparams.n_head();
+    const int n_embd_head_k = hparams.n_embd_head_k;
 
     LLAMA_LOG_INFO("%s: mem_size = %u, n_seq_max = %u, type_r = '%s', type_s = '%s', n_layer = %d\n",
             __func__, mem_size, n_seq_max, ggml_type_name(type_r), ggml_type_name(type_s), n_layer);
@@ -41,7 +43,7 @@ llama_memory_recurrent::llama_memory_recurrent(
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*n_layer*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t(3u*n_layer*ggml_tensor_overhead()),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -62,6 +64,7 @@ llama_memory_recurrent::llama_memory_recurrent(
 
     r_l.resize(n_layer);
     s_l.resize(n_layer);
+    kv_l.resize(n_layer);
 
     for (int i = 0; i < n_layer; i++) {
         if (filter && !filter(i)) {
@@ -89,10 +92,13 @@ llama_memory_recurrent::llama_memory_recurrent(
 
         ggml_tensor * r = ggml_new_tensor_1d(ctx, type_r, hparams.n_embd_r()*mem_size);
         ggml_tensor * s = ggml_new_tensor_1d(ctx, type_s, hparams.n_embd_s()*mem_size);
+        ggml_tensor * kv = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, n_embd_head_k, n_embd_head_k, n_head, n_seq_max);
         ggml_format_name(r, "cache_r_l%d", i);
         ggml_format_name(s, "cache_s_l%d", i);
+        ggml_format_name(kv, "cache_kv_l%d", i);
         r_l[i] = r;
         s_l[i] = s;
+        kv_l[i] = kv;
     }
 
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
