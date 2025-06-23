@@ -14458,6 +14458,10 @@ llm_graph_result_ptr llama_model::build_graph(
             {
                 llm = std::make_unique<llm_build_wavtokenizer_dec>(*this, params, gf);
             } break;
+        case LLM_ARCH_MINIMAXM1:
+            {
+                llm = std::make_unique<llm_build_minimax_m1>(*this, params, gf);
+            } break;
         case LLM_ARCH_PLM:
             {
                 llm = std::make_unique<llm_build_plm>(*this, params, gf);
