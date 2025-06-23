@@ -627,7 +627,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.GRANITE_MOE:      "granitemoe",
     MODEL_ARCH.CHAMELEON:        "chameleon",
     MODEL_ARCH.WAVTOKENIZER_DEC: "wavtokenizer-dec",
-    MODEL_ARCH.MINIMAXM1:         "minimax-m1",
+    MODEL_ARCH.MINIMAXM1:        "minimax-m1",
     MODEL_ARCH.PLM:              "plm",
     MODEL_ARCH.BAILINGMOE:       "bailingmoe",
     MODEL_ARCH.DOTS1:            "dots1",
