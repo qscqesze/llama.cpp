@@ -4160,7 +4160,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                     output   = create_tensor(tn(LLM_TENSOR_OUTPUT, "weight"), {hparams.convnext.n_embd, n_embd}, 0);
                     output_b = create_tensor(tn(LLM_TENSOR_OUTPUT, "bias"),   {n_embd}, 0);
                 } break;
-            case LLM_ARCH_MINIMAX01:
+            case LLM_ARCH_MINIMAXM1:
                 {
                     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
 
@@ -13197,7 +13197,7 @@ struct llm_build_minimax : public llm_graph_context {
         struct ggml_tensor * cur;
         struct ggml_tensor * inpL;
 
-        inpL = llm_build_inp_embd(ctx0, lctx, hparams, ubatch, model.tok_embd, cb);
+        inpL = build_inp_embd(model.tok_embd);
 
         // inp_pos - contains the positions
         struct ggml_tensor * inp_pos = build_inp_pos();

@@ -392,7 +392,7 @@ void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
 
     if (inp_k_decay) {
         const int64_t n_head = hparams.n_head();
-        const int64_t n_seq_tokens = ubatch.n_seq_tokens;
+        const int64_t n_seq_tokens = ubatch->n_seq_tokens;
 
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_k_decay->buffer));
 
