@@ -71,7 +71,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_GRANITE_MOE,      "granitemoe"       },
     { LLM_ARCH_CHAMELEON,        "chameleon"        },
     { LLM_ARCH_WAVTOKENIZER_DEC, "wavtokenizer-dec" },
-    { LLM_ARCH_MINIMAXM1,         "minimaxm1"         },
+    { LLM_ARCH_MINIMAXM1,        "minimax-m1"       },
     { LLM_ARCH_PLM,              "plm"              },
     { LLM_ARCH_BAILINGMOE,       "bailingmoe"       },
     { LLM_ARCH_DOTS1,            "dots1"            },
