@@ -13328,7 +13328,7 @@ struct llm_build_minimax : public llm_graph_context {
 
                 const auto * kv_state = static_cast<const llama_kv_cache_unified_state *>(mstate);
                 struct ggml_tensor * kv_cache_tensor = kv_state->get_k(ctx0, il);
-                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_cache_tensor, n_embd_head*n_embd_head*n_head, n_seq_max, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, 0);
+                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_cache_tensor, n_embd_head, n_seq_max, ggml_element_size(kv_cache_tensor)*n_embd_head*n_head, 0);
                 cb(kv_old, "kv_old_2d", il);
 
                 // optimization for a single sequence
