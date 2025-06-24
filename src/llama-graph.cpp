@@ -1027,7 +1027,8 @@ llm_graph_input_decay * llm_graph_context::build_inp_decay() const {
     const int64_t n_seqs = ubatch.n_seqs;
 
     // inp_slopes: F32 [n_head]
-    inp->inp_slopes = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head);
+    const int64_t n_head_kv = hparams.n_head_kv();
+    inp->inp_slopes = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head_kv);
     ggml_set_input(inp->inp_slopes);
 
     // inp_q_decay: F32 [n_head, n_seq_tokens]
@@ -1035,7 +1036,7 @@ llm_graph_input_decay * llm_graph_context::build_inp_decay() const {
     ggml_set_input(inp->inp_q_decay);
 
     // inp_k_decay: F32 [n_head, n_seq_tokens]
-    inp->inp_k_decay = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_head, n_seq_tokens);
+    inp->inp_k_decay = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_head_kv, n_seq_tokens);
     ggml_set_input(inp->inp_k_decay);
 
     // inp_diag_decay: F32 [n_head, n_seq_tokens, n_seq_tokens]
