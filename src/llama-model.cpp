@@ -13488,21 +13488,12 @@ struct llm_build_minimax : public llm_graph_context {
                         LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);                
                 cb(qkv_norm, "qkv_norm", il);
 
-                printf("cur: [%lld, %lld, %lld, %lld]\n", cur->ne[0], cur->ne[1], cur->ne[2], cur->ne[3]);
-                printf("wg: [%lld, %lld, %lld, %lld]\n", model.layers[il].wg->ne[0], model.layers[il].wg->ne[1], model.layers[il].wg->ne[2], model.layers[il].wg->ne[3]);
-
                 struct ggml_tensor * g = build_lora_mm(model.layers[il].wg, cur);
                 cb(g, "g", il);
 
                 g = ggml_sigmoid(ctx0, g);
                 cb(g, "g_sigm", il);
 
-                int g_dims = 0;
-                for (int i = 0; i < 4; ++i) if (g->ne[i] > 1) ++g_dims;
-                int qkv_norm_dims = 0;
-                for (int i = 0; i < 4; ++i) if (qkv_norm->ne[i] > 1) ++qkv_norm_dims;
-                printf("g: dims=%d, shape=[%lld, %lld, %lld, %lld]\n", g_dims, g->ne[0], g->ne[1], g->ne[2], g->ne[3]);
-                printf("qkv_norm: dims=%d, shape=[%lld, %lld, %lld, %lld]\n", qkv_norm_dims, qkv_norm->ne[0], qkv_norm->ne[1], qkv_norm->ne[2], qkv_norm->ne[3]);
                 cur = ggml_mul(ctx0, g, qkv_norm);
 
                 cur = build_lora_mm(model.layers[il].wo, cur);
