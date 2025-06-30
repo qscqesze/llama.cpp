@@ -13299,15 +13299,6 @@ struct llm_build_minimax : public llm_graph_context {
                 );
                 cb(k_rope, "k_rope", il);
 
-                // cur = llm_build_kv(ctx0, lctx, kv_self, gf,
-                //         model.layers[il].wo, NULL,
-                //         k_rope, Vcur, q_rope, KQ_mask, n_tokens, kv_head, n_kv, 1.0f/sqrtf(float(n_embd_head)), cb, il);
-
-                // ggml_tensor * q_states = ggml_concat(ctx0, Qcur, q_rope, 0);
-                // cb(q_states, "q_states", il);
-
-                // ggml_tensor * k_states = ggml_concat(ctx0, Kcur, ggml_repeat(ctx0, k_rope, q_rope), 0);
-                // cb(k_states, "k_states", il);
                 const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f/sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
 
                 cur = build_attn(inp_attn, gf,
