@@ -359,9 +359,7 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
 }
 
 void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
-    auto inp = std::make_unique<llm_graph_input_decay>(hparams);
-    if (inp->inp_slopes) {
-        auto inp_slopes = inp->inp_slopes;
+    if (inp_slopes) {
         const int64_t n_head = hparams.n_head();
 
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_slopes->buffer));
@@ -376,8 +374,7 @@ void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
         }
     }
 
-    if (inp->inp_q_decay) {
-        auto inp_q_decay = inp->inp_q_decay;
+    if (inp_q_decay) {
         const int64_t n_head = hparams.n_head();
         const int64_t n_seq_tokens = ubatch->n_seq_tokens;
 
@@ -395,8 +392,7 @@ void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
         }
     }
 
-    if (inp->inp_k_decay) {
-        auto inp_k_decay = inp->inp_k_decay;
+    if (inp_k_decay) {
         const int64_t n_head = hparams.n_head();
         const int64_t n_seq_tokens = ubatch->n_seq_tokens;
 
@@ -414,8 +410,7 @@ void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
         }
     }
 
-    if (inp->inp_diag_decay) {
-        auto inp_diag_decay = inp->inp_diag_decay;
+    if (inp_diag_decay) {
         const int64_t n_head = hparams.n_head();
         const int64_t n_seq_tokens = ubatch->n_seq_tokens;
 
@@ -437,8 +432,7 @@ void llm_graph_input_decay::set_input(const llama_ubatch * ubatch) {
         }
     }
 
-    if (inp->inp_seq_ids) {
-        auto inp_seq_ids = inp->inp_seq_ids;
+    if (inp_seq_ids) {
         const int64_t n_seqs = ubatch->n_seqs;
 
         GGML_ASSERT(n_seqs != 0);
@@ -1039,31 +1033,30 @@ llm_graph_input_decay * llm_graph_context::build_inp_decay() const {
     const int64_t n_seq_tokens = ubatch.n_seq_tokens;
     const int64_t n_seqs = ubatch.n_seqs;
 
-    // inp_slopes: F32 [n_head]
-    const int64_t n_head_kv = hparams.n_head_kv();
     inp->inp_slopes = ggml_new_tensor_1d(ctx0, GGML_TYPE_F32, n_head);
     ggml_set_input(inp->inp_slopes);
-    cb(inp->inp_slopes, "slopes", -1);
 
-    // inp_q_decay: F32 [n_head, n_seq_tokens]
-    inp->inp_q_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_head, n_seq_tokens);
-    ggml_set_input(inp->inp_q_decay);
-    cb(inp->inp_q_decay, "q_decay_exp", -1);
+    if (n_seq_tokens != 1) {
+        inp->inp_q_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_head, n_seq_tokens);
+        ggml_set_input(inp->inp_q_decay);
 
-    // inp_k_decay: F32 [n_head, n_seq_tokens]
-    inp->inp_k_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_head, n_seq_tokens);
-    ggml_set_input(inp->inp_k_decay);
-    cb(inp->inp_k_decay, "k_decay_exp", -1);
+        inp->inp_k_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, 1, n_head, n_seq_tokens);
+        ggml_set_input(inp->inp_k_decay);
 
-    // inp_diag_decay: F32 [n_head, n_seq_tokens, n_seq_tokens]
-    inp->inp_diag_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_head, n_seq_tokens, n_seq_tokens);
-    ggml_set_input(inp->inp_diag_decay);
-    cb(inp->inp_diag_decay, "diag_decay_exp", -1);
+        inp->inp_diag_decay = ggml_new_tensor_3d(ctx0, GGML_TYPE_F32, n_head, n_seq_tokens, n_seq_tokens);
+        ggml_set_input(inp->inp_diag_decay);
+    } else {
+        inp->inp_q_decay = nullptr;
+        inp->inp_k_decay = nullptr;
+        inp->inp_diag_decay = nullptr;
+    }
 
-    // inp_seq_ids: I32 [n_seqs]
-    inp->inp_seq_ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_seqs);
-    ggml_set_input(inp->inp_seq_ids);
-    cb(inp->inp_seq_ids, "seq_ids", -1);
+    if (n_seqs > 1) {
+        inp->inp_seq_ids = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_seqs);
+        ggml_set_input(inp->inp_seq_ids);
+    } else {
+        inp->inp_seq_ids = nullptr;
+    }
 
     return (llm_graph_input_decay *) res->add_input(std::move(inp));
 }
