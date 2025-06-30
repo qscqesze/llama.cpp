@@ -13351,8 +13351,8 @@ struct llm_build_minimax : public llm_graph_context {
                     struct ggml_tensor * ratio = ggml_exp(ctx0, slopes_neg);
                     cb(ratio, "ratio", il);
 
-                    struct ggml_tensor * block_decay = ggml_exp(ctx0, slopes_neg);
-                    cb(block_decay, "block_decay", il);
+                    // struct ggml_tensor * block_decay = ggml_exp(ctx0, slopes_neg);
+                    // cb(block_decay, "block_decay", il);
 
                     struct ggml_tensor * ratio_3d = ggml_view_3d(ctx0, ratio, 1, 1, n_head, ggml_element_size(ratio), ggml_element_size(ratio), 0);
                     cb(ratio_3d, "ratio3d", il);
@@ -13450,25 +13450,14 @@ struct llm_build_minimax : public llm_graph_context {
                     cb(kv_new, "kv_new", il);
                 }
 
-                // store new kv states for each processed sequence
-                struct ggml_tensor * kv_self_l_v = ggml_view_4d(ctx0, kv_cache_tensor,
-                    n_embd_head, n_embd_head, n_head, n_seq_max,
-                    ggml_element_size(kv_cache_tensor)*n_embd_head,
-                    ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head,
-                    ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head,
-                    0);
-
-                if (ubatch.seq_id) {
-                    for (uint64_t s = 0; s < ubatch.n_seqs; s++) {
-                        if (ubatch.seq_id[s] == nullptr) {
-                            continue;
-                        }
-                        uint64_t seq_id = ubatch.seq_id[s][0];
-                        struct ggml_tensor * kv_old_seq_view = ggml_view_4d(ctx0, kv_self_l_v, n_embd_head, n_embd_head, n_head, 1, kv_self_l_v->nb[1], kv_self_l_v->nb[2], kv_self_l_v->nb[3], kv_self_l_v->nb[3]*seq_id);
-                        struct ggml_tensor * kv_new_seq_view = ggml_view_4d(ctx0, kv_new,      n_embd_head, n_embd_head, n_head, 1, kv_new->nb[1],      kv_new->nb[2],      kv_new->nb[3],      kv_new->nb[3]*s);
-                        ggml_build_forward_expand(gf, ggml_cpy(ctx0, kv_new_seq_view, kv_old_seq_view));
-                    }
+                // TODO: 好像有点问题，需要解决(@qingjun)
+                for (uint64_t s = 0; s < ubatch.n_seqs; s++) {
+                    uint64_t seq_id = ubatch.seq_id && ubatch.seq_id[s] ? ubatch.seq_id[s][0] : 0;
+                    struct ggml_tensor * kv_old_seq_view = ggml_view_4d(ctx0, kv_cache_tensor, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head*seq_id);
+                    struct ggml_tensor * kv_new_seq_view = ggml_view_4d(ctx0, kv_new, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head*s);
+                    ggml_build_forward_expand(gf, ggml_cpy(ctx0, kv_new_seq_view, kv_old_seq_view));
                 }
+
                 qkv = ggml_cont(ctx0, ggml_permute(ctx0, qkv, 0, 2, 1, 3));
                 cb(qkv, "qkv_permuted", il);
 
