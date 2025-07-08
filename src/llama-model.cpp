@@ -13231,6 +13231,7 @@ struct llm_build_minimax : public llm_graph_context {
         const int64_t n_seq_max = cparams.n_seq_max;
 
         GGML_ASSERT(n_seqs != 0);
+        // GGML_ASSERT(ubatch.equal_seqs);
         GGML_ASSERT(ubatch.n_tokens == n_seq_tokens * n_seqs);
 
         struct ggml_tensor * cur;
@@ -13242,7 +13243,7 @@ struct llm_build_minimax : public llm_graph_context {
         struct ggml_tensor * inp_pos = build_inp_pos();
 
         // KQ_mask (mask for 1 head, it will be broadcasted to all heads)
-        // struct ggml_tensor * KQ_mask = inp->get_kq_mask();
+       // struct ggml_tensor * KQ_mask = inp->get_kq_mask();
 
         auto inp_decay = build_inp_decay();
 
@@ -13265,25 +13266,32 @@ struct llm_build_minimax : public llm_graph_context {
 
             cb(cur, "attn_norm", il);
 
-            struct ggml_tensor * residual = cur;
-
             // self-attention
             if (il % 8 == 7) {
-                // compute Q and K and RoPE them
                 ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
                 cb(Qcur, "Qcur", il);
+                if (model.layers[il].bq) {
+                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
+                    cb(Qcur, "Qcur", il);
+                }
 
                 ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
                 cb(Kcur, "Kcur", il);
+                if (model.layers[il].bk) {
+                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
+                    cb(Kcur, "Kcur", il);
+                }
 
                 ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
                 cb(Vcur, "Vcur", il);
+                if (model.layers[il].bv) {
+                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
+                    cb(Vcur, "Vcur", il);
+                }
 
-                Qcur = ggml_view_3d(ctx0, Qcur, n_embd_head, n_head, n_tokens, ggml_element_size(Qcur)*n_embd_head, ggml_element_size(Qcur)*n_embd_head*n_head, 0);
-
-                Kcur = ggml_view_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens, ggml_element_size(Kcur)*n_embd_head, ggml_element_size(Kcur)*n_embd_head*n_head_kv, 0);
-
-                Vcur = ggml_view_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens, ggml_element_size(Vcur)*n_embd_head, ggml_element_size(Vcur)*n_embd_head*n_head_kv, 0);
+                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
+                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
+                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head_kv, n_tokens);
 
                 struct ggml_tensor * q_rope = ggml_rope_ext(
                     ctx0, Qcur, inp_pos, nullptr,
@@ -13298,12 +13306,10 @@ struct llm_build_minimax : public llm_graph_context {
                     ext_factor, attn_factor, beta_fast, beta_slow
                 );
                 cb(k_rope, "k_rope", il);
-
-                const float kq_scale = hparams.f_attention_scale == 0.0f ? 1.0f/sqrtf(float(n_embd_head)) : hparams.f_attention_scale;
-
+            
                 cur = build_attn(inp_attn, gf,
-                        model.layers[il].wo, NULL,
-                        q_rope, k_rope, Vcur, nullptr, nullptr, kq_scale, il);
+                                model.layers[il].wo, model.layers[il].bo,
+                                q_rope, k_rope, Vcur, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
             } else {
                 float slope_scale = (n_layer > 1) ? (1.0 - 1.0 * il / (n_layer - 1) + 1e-5) : 1.0;
                 struct ggml_tensor * slope_rate = ggml_scale(ctx0, slopes, slope_scale);
@@ -13344,15 +13350,11 @@ struct llm_build_minimax : public llm_graph_context {
                 struct ggml_tensor * qkv = nullptr;
                 struct ggml_tensor * kv_new = nullptr;
                 if (n_seq_tokens == 1) {
-
-                    struct ggml_tensor * slopes_neg = ggml_scale(ctx0, slope_rate, -1.0*n_seq_tokens);
+                    struct ggml_tensor * slopes_neg = ggml_scale(ctx0, slope_rate, -1.0);
                     cb(slopes_neg, "slopes_neg", il);
 
                     struct ggml_tensor * ratio = ggml_exp(ctx0, slopes_neg);
                     cb(ratio, "ratio", il);
-
-                    // struct ggml_tensor * block_decay = ggml_exp(ctx0, slopes_neg);
-                    // cb(block_decay, "block_decay", il);
 
                     struct ggml_tensor * ratio_3d = ggml_view_3d(ctx0, ratio, 1, 1, n_head, ggml_element_size(ratio), ggml_element_size(ratio), 0);
                     cb(ratio_3d, "ratio3d", il);
@@ -13483,29 +13485,21 @@ struct llm_build_minimax : public llm_graph_context {
                 cur = ggml_reshape_2d(ctx0, cur, cur->ne[0], n_seq_tokens*n_seqs);
                 cb(cur, "attn_out", il);
             }
-
             if (il == n_layer - 1) {
                 // skip computing output for unused tokens
-                struct ggml_tensor * inp_out_ids = build_inp_out_ids();
-                n_tokens = n_outputs;
+                ggml_tensor * inp_out_ids = build_inp_out_ids();
                 cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
                 inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
-                residual = ggml_get_rows(ctx0, residual, inp_out_ids);
             }
 
-            residual = ggml_scale(ctx0, residual, hparams.f_residual_scale);
-            cb(residual, "residual_scaled_attn", il);
-
-            struct ggml_tensor * ffn_inp = ggml_add(ctx0, cur, residual);
+            ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
             cb(ffn_inp, "ffn_inp", il);
 
-            // MoE
-            cur = llm_build_norm(ctx0, ffn_inp, hparams,
+            // MoE branch
+            cur = build_norm(ffn_inp,
                     model.layers[il].ffn_norm, NULL,
-                    LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
+                    LLM_NORM_RMS, il);
             cb(cur, "ffn_norm", il);
-
-            residual = cur;
 
             cur = build_moe_ffn(cur,
                     model.layers[il].ffn_gate_inp,
@@ -13516,15 +13510,24 @@ struct llm_build_minimax : public llm_graph_context {
                     n_expert, n_expert_used,
                     LLM_FFN_SILU, true,
                     false, 0.0,
-                    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX,
-                    il);
-            cb(cur, "ffn_moe_out", il);
+                    LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il);
+            cb(cur, "moe_out", il);
+            
+            // FFN shared expert
+            {
+                ggml_tensor * ffn_shexp = build_ffn(cur,
+                        model.layers[il].ffn_up_shexp,   NULL, NULL,
+                        model.layers[il].ffn_gate_shexp, NULL, NULL,
+                        model.layers[il].ffn_down_shexp, NULL, NULL,
+                        NULL,
+                        LLM_FFN_SILU, LLM_FFN_PAR, il);
+                cb(ffn_shexp, "ffn_shexp", il);
 
-            residual = ggml_scale(ctx0, residual, hparams.f_residual_scale);
-            cb(residual, "residual_scaled_ffn", il);
+                cur = ggml_add(ctx0, cur, ffn_shexp);
+                cb(cur, "ffn_out", il);
+            }
 
-            cur = ggml_add(ctx0, cur, residual);
-            cb(cur, "ffn_out", il);
+            cur = ggml_add(ctx0, cur, ffn_inp);
 
             cur = build_cvec(cur, il);
             cb(cur, "l_out", il);
@@ -13538,11 +13541,15 @@ struct llm_build_minimax : public llm_graph_context {
         cur = build_norm(cur,
                 model.output_norm, NULL,
                 LLM_NORM_RMS, -1);
+
         cb(cur, "result_norm", -1);
+        res->t_embd = cur;
 
         // lm_head
         cur = build_lora_mm(model.output, cur);
+
         cb(cur, "result_output", -1);
+        res->t_logits = cur;
 
         ggml_build_forward_expand(gf, cur);
     }
