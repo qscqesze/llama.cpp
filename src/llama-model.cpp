@@ -13178,46 +13178,6 @@ struct llm_build_wavtokenizer_dec : public llm_graph_context {
     }
 };
 
-using llm_build_cb = std::function<void(struct ggml_tensor * cur, const char * name, int nl)>;
-
-static struct ggml_tensor * llm_build_norm(
-        struct ggml_context * ctx,
-         struct ggml_tensor * cur,
-        const llama_hparams & hparams,
-         struct ggml_tensor * mw,
-         struct ggml_tensor * mb,
-              llm_norm_type   type,
-         const llm_build_cb & cb,
-                        int   il) {
-    switch (type) {
-        case LLM_NORM:       cur = ggml_norm      (ctx, cur, hparams.f_norm_eps);     break;
-        case LLM_NORM_RMS:   cur = ggml_rms_norm  (ctx, cur, hparams.f_norm_rms_eps); break;
-        case LLM_NORM_GROUP:
-            {
-                cur = ggml_reshape_3d(ctx, cur, cur->ne[0], 1, cur->ne[1]);
-                cur = ggml_group_norm(ctx, cur, hparams.n_norm_groups, hparams.f_norm_group_eps);
-                cur = ggml_reshape_2d(ctx, cur, cur->ne[0],    cur->ne[2]);
-            } break;
-    }
-
-    if (mw || mb) {
-        cb(cur, "norm", il);
-    }
-
-    if (mw) {
-        cur = ggml_mul(ctx, cur, mw);
-        if (mb) {
-            cb(cur, "norm_w", il);
-        }
-    }
-
-    if (mb) {
-        cur = ggml_add(ctx, cur, mb);
-    }
-
-    return cur;
-}
-
 struct llm_build_minimax : public llm_graph_context {
 
     llm_build_minimax(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {
@@ -13260,9 +13220,9 @@ struct llm_build_minimax : public llm_graph_context {
             struct ggml_tensor * inpSA = inpL;
 
             // norm
-            cur = llm_build_norm(ctx0, inpL, hparams,
+            cur = build_norm(inpL,
                     model.layers[il].attn_norm, NULL,
-                    LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
+                    LLM_NORM_RMS, -1);
 
             cb(cur, "attn_norm", il);
 
@@ -13272,24 +13232,12 @@ struct llm_build_minimax : public llm_graph_context {
             if (il % 8 == 7) {
                 ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
                 cb(Qcur, "Qcur", il);
-                if (model.layers[il].bq) {
-                    Qcur = ggml_add(ctx0, Qcur, model.layers[il].bq);
-                    cb(Qcur, "Qcur", il);
-                }
 
                 ggml_tensor * Kcur = build_lora_mm(model.layers[il].wk, cur);
                 cb(Kcur, "Kcur", il);
-                if (model.layers[il].bk) {
-                    Kcur = ggml_add(ctx0, Kcur, model.layers[il].bk);
-                    cb(Kcur, "Kcur", il);
-                }
 
                 ggml_tensor * Vcur = build_lora_mm(model.layers[il].wv, cur);
                 cb(Vcur, "Vcur", il);
-                if (model.layers[il].bv) {
-                    Vcur = ggml_add(ctx0, Vcur, model.layers[il].bv);
-                    cb(Vcur, "Vcur", il);
-                }
 
                 Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head,    n_tokens);
                 Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head_kv, n_tokens);
@@ -13468,9 +13416,9 @@ struct llm_build_minimax : public llm_graph_context {
                 qkv = ggml_view_3d(ctx0, qkv, qkv->ne[0]*qkv->ne[1], qkv->ne[2], qkv->ne[3], ggml_element_size(qkv)*qkv->ne[0]*qkv->ne[1], ggml_element_size(qkv)*qkv->ne[0]*qkv->ne[1]*qkv->ne[2], 0);
 
                 // norm
-                struct ggml_tensor * qkv_norm = llm_build_norm(ctx0, qkv, hparams,
-                        model.layers[il].attn_norm_2, NULL,
-                        LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);                
+                struct ggml_tensor * qkv_norm = build_norm(qkv,
+                    model.layers[il].attn_norm_2, NULL,
+                    LLM_NORM_RMS, -1);             
                 cb(qkv_norm, "qkv_norm", il);
 
                 struct ggml_tensor * g = build_lora_mm(model.layers[il].wg, cur);
@@ -13490,6 +13438,7 @@ struct llm_build_minimax : public llm_graph_context {
             if (il == n_layer - 1) {
                 // skip computing output for unused tokens
                 ggml_tensor * inp_out_ids = build_inp_out_ids();
+                n_tokens = n_outputs;
                 cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
                 inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
                 residual = ggml_get_rows(ctx0, residual, inp_out_ids);
@@ -13502,9 +13451,9 @@ struct llm_build_minimax : public llm_graph_context {
             cb(ffn_inp, "ffn_inp", il);
 
             // MoE branch
-            cur = llm_build_norm(ctx0, ffn_inp, hparams,
+            cur = build_norm(ffn_inp,
                     model.layers[il].ffn_norm, NULL,
-                    LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
+                    LLM_NORM_RMS, -1);     
             cb(cur, "ffn_norm", il);
 
             residual = cur;
@@ -13536,10 +13485,9 @@ struct llm_build_minimax : public llm_graph_context {
 
         cur = inpL;
 
-
-        cur = llm_build_norm(ctx0, cur, hparams,
+        cur = build_norm(cur,
                 model.output_norm, NULL,
-                LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, -1);
+                LLM_NORM_RMS, -1);
         cb(cur, "result_norm", -1);
 
         // lm_head
