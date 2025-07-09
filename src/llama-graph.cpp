@@ -759,6 +759,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     ggml_tensor * logits = build_lora_mm(gate_inp, cur); // [n_expert, n_tokens]
     cb(logits, "ffn_moe_logits", il);
 
+    // Add numerical stability check
+    logits = ggml_clamp(ctx0, logits, -100.0f, 100.0f);
+    cb(logits, "ffn_moe_logits_clamped", il);
+
     ggml_tensor * probs = nullptr;
     switch (gating_op) {
         case LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX:

@@ -13266,6 +13266,8 @@ struct llm_build_minimax : public llm_graph_context {
 
             cb(cur, "attn_norm", il);
 
+            struct ggml_tensor * residual = cur;
+
             // self-attention
             if (il % 8 == 7) {
                 ggml_tensor * Qcur = build_lora_mm(model.layers[il].wq, cur);
@@ -13311,7 +13313,7 @@ struct llm_build_minimax : public llm_graph_context {
                                 model.layers[il].wo, model.layers[il].bo,
                                 q_rope, k_rope, Vcur, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
             } else {
-                float slope_scale = (n_layer > 1) ? (1.0 - 1.0 * il / (n_layer - 1) + 1e-5) : 1.0;
+                float slope_scale = 1.0 - 1.0 * il / (n_layer - 1) + 1e-5;
                 struct ggml_tensor * slope_rate = ggml_scale(ctx0, slopes, slope_scale);
                 cb(slope_rate, "slope_rate", il);
 
@@ -13490,16 +13492,22 @@ struct llm_build_minimax : public llm_graph_context {
                 ggml_tensor * inp_out_ids = build_inp_out_ids();
                 cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
                 inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
+                residual = ggml_get_rows(ctx0, residual, inp_out_ids);
             }
+
+            residual = ggml_scale(ctx0, residual, hparams.f_residual_scale);
+            cb(residual, "residual_scaled_attn", il);
 
             ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
             cb(ffn_inp, "ffn_inp", il);
 
             // MoE branch
-            cur = build_norm(ffn_inp,
+            cur = llm_build_norm(ctx0, ffn_inp, hparams,
                     model.layers[il].ffn_norm, NULL,
-                    LLM_NORM_RMS, il);
+                    LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, il);
             cb(cur, "ffn_norm", il);
+
+            residual = cur;
 
             cur = build_moe_ffn(cur,
                     model.layers[il].ffn_gate_inp,
@@ -13511,23 +13519,13 @@ struct llm_build_minimax : public llm_graph_context {
                     LLM_FFN_SILU, true,
                     false, 0.0,
                     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il);
-            cb(cur, "moe_out", il);
+            cb(cur, "ffn_moe_out", il);
             
-            // FFN shared expert
-            {
-                ggml_tensor * ffn_shexp = build_ffn(cur,
-                        model.layers[il].ffn_up_shexp,   NULL, NULL,
-                        model.layers[il].ffn_gate_shexp, NULL, NULL,
-                        model.layers[il].ffn_down_shexp, NULL, NULL,
-                        NULL,
-                        LLM_FFN_SILU, LLM_FFN_PAR, il);
-                cb(ffn_shexp, "ffn_shexp", il);
+            residual = ggml_scale(ctx0, residual, hparams.f_residual_scale);
+            cb(residual, "residual_scaled_ffn", il);
 
-                cur = ggml_add(ctx0, cur, ffn_shexp);
-                cb(cur, "ffn_out", il);
-            }
-
-            cur = ggml_add(ctx0, cur, ffn_inp);
+            cur = ggml_add(ctx0, cur, residual);
+            cb(cur, "ffn_out", il);
 
             cur = build_cvec(cur, il);
             cb(cur, "l_out", il);
@@ -13538,18 +13536,15 @@ struct llm_build_minimax : public llm_graph_context {
 
         cur = inpL;
 
-        cur = build_norm(cur,
-                model.output_norm, NULL,
-                LLM_NORM_RMS, -1);
 
+        cur = llm_build_norm(ctx0, cur, hparams,
+                model.output_norm, NULL,
+                LLM_NORM_RMS, [this](ggml_tensor * cur, const char * name, int il) { cb(cur, name, il); }, -1);
         cb(cur, "result_norm", -1);
-        res->t_embd = cur;
 
         // lm_head
         cur = build_lora_mm(model.output, cur);
-
         cb(cur, "result_output", -1);
-        res->t_logits = cur;
 
         ggml_build_forward_expand(gf, cur);
     }
