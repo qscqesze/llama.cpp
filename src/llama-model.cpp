@@ -13202,19 +13202,16 @@ struct llm_build_minimax : public llm_graph_context {
         // inp_pos - contains the positions
         struct ggml_tensor * inp_pos = build_inp_pos();
 
-        // KQ_mask (mask for 1 head, it will be broadcasted to all heads)
-       // struct ggml_tensor * KQ_mask = inp->get_kq_mask();
-
-        auto inp_decay = build_inp_decay();
-
         // slope tensor
-        struct ggml_tensor * slopes = inp_decay->inp_slopes;
-        struct ggml_tensor * q_decay_exp = (n_seq_tokens != 1 ? inp_decay->inp_q_decay : nullptr);
-        struct ggml_tensor * k_decay_exp = (n_seq_tokens != 1 ? inp_decay->inp_k_decay : nullptr);
-        struct ggml_tensor * diag_decay_exp = (n_seq_tokens != 1 ? inp_decay->inp_diag_decay : nullptr);
-        struct ggml_tensor * seq_ids = (n_seqs > 1 ? inp_decay->inp_seq_ids : nullptr);
+        struct ggml_tensor * slopes = build_inp_slopes();
+        struct ggml_tensor * q_decay_exp = (n_seq_tokens != 1 ? build_inp_q_decay(slopes) : nullptr);
+        struct ggml_tensor * k_decay_exp = (n_seq_tokens != 1 ? build_inp_k_decay(slopes) : nullptr);
+        struct ggml_tensor * diag_decay_exp = (n_seq_tokens != 1 ? build_inp_diag_decay(slopes) : nullptr);
+        struct ggml_tensor * seq_ids = (n_seqs > 1 ? build_inp_seq_ids() : nullptr);
 
         auto * inp_attn = build_attn_inp_kv_unified();
+
+        const float kq_scale = 1.0f/sqrtf(float(hparams.n_embd_head_k));
 
         for (int il = 0; il < n_layer; ++il) {
             struct ggml_tensor * inpSA = inpL;
@@ -13222,7 +13219,7 @@ struct llm_build_minimax : public llm_graph_context {
             // norm
             cur = build_norm(inpL,
                     model.layers[il].attn_norm, NULL,
-                    LLM_NORM_RMS, -1);
+                    LLM_NORM_RMS, il);
 
             cb(cur, "attn_norm", il);
 
@@ -13258,10 +13255,10 @@ struct llm_build_minimax : public llm_graph_context {
                 cb(k_rope, "k_rope", il);
             
                 cur = build_attn(inp_attn, gf,
-                                model.layers[il].wo, model.layers[il].bo,
-                                q_rope, k_rope, Vcur, nullptr, nullptr, 1.0f/sqrtf(float(n_embd_head)), il);
+                                model.layers[il].wo, NULL,
+                                q_rope, k_rope, Vcur, nullptr, nullptr, kq_scale, il);
             } else {
-                float slope_scale = 1.0 - 1.0 * il / (n_layer - 1) + 1e-5;
+                float slope_scale = (n_layer > 1) ? (1.0 - 1.0 * il / (n_layer - 1) + 1e-5) : 1.0;
                 struct ggml_tensor * slope_rate = ggml_scale(ctx0, slopes, slope_scale);
                 cb(slope_rate, "slope_rate", il);
 
@@ -13299,49 +13296,26 @@ struct llm_build_minimax : public llm_graph_context {
 
                 struct ggml_tensor * qkv = nullptr;
                 struct ggml_tensor * kv_new = nullptr;
-                if (n_seq_tokens == 1) {
-                    struct ggml_tensor * slopes_neg = ggml_scale(ctx0, slope_rate, -1.0);
-                    cb(slopes_neg, "slopes_neg", il);
+                if (n_seq_tokens >= 1) {
+                    // 计算衰减因子（对于 n_seq_tokens == 1，某些衰减因子为 nullptr）
+                    struct ggml_tensor * q_decay = (n_seq_tokens != 1) ? ggml_exp(ctx0, ggml_scale(ctx0, q_decay_exp, slope_scale)) : nullptr;
+                    struct ggml_tensor * k_decay = (n_seq_tokens != 1) ? ggml_exp(ctx0, ggml_scale(ctx0, k_decay_exp, slope_scale)) : nullptr;
+                    struct ggml_tensor * diag_decay = (n_seq_tokens != 1) ? ggml_exp(ctx0, ggml_scale(ctx0, diag_decay_exp, slope_scale)) : nullptr;
+                    
+                    if (n_seq_tokens != 1) {
+                        q_decay = ggml_clamp(ctx0, q_decay, -10.0f, 10.0f);
+                        k_decay = ggml_clamp(ctx0, k_decay, -10.0f, 10.0f);
+                        diag_decay = ggml_clamp(ctx0, diag_decay, -10.0f, 10.0f);
+                        cb(q_decay, "q_decay", il);
+                        cb(k_decay, "k_decay", il);
+                        cb(diag_decay, "diag_decay", il);
+                    }
 
-                    struct ggml_tensor * ratio = ggml_exp(ctx0, slopes_neg);
-                    cb(ratio, "ratio", il);
-
-                    struct ggml_tensor * ratio_3d = ggml_view_3d(ctx0, ratio, 1, 1, n_head, ggml_element_size(ratio), ggml_element_size(ratio), 0);
-                    cb(ratio_3d, "ratio3d", il);
-
-                    struct ggml_tensor * v_trans = ggml_cont(ctx0, ggml_permute(ctx0, Vcur, 1, 2, 0, 3));
-                    cb(v_trans, "v_trans", il);
-
-                    struct ggml_tensor * k_trans = ggml_cont(ctx0, ggml_permute(ctx0, Kcur, 1, 2, 0, 3));
-                    cb(k_trans, "k_trans", il);
-
-                    struct ggml_tensor * kv_cur = ggml_mul_mat(ctx0, v_trans, k_trans);
-                    cb(kv_cur, "kv_cur", il);
-
-                    struct ggml_tensor * kv_old_s = ggml_mul(ctx0, kv_old, ratio_3d);
-                    cb(kv_old_s, "kv_old_s", il);
-
-                    kv_new = ggml_add(ctx0, kv_old_s, kv_cur);
-                    cb(kv_new, "kv_new", il);
-
-                    struct ggml_tensor * q_trans = ggml_cont(ctx0, ggml_permute(ctx0, Qcur, 0, 2, 1, 3));
-                    cb(q_trans, "q_trans", il);
-
-                    struct ggml_tensor * kv_new_trans = ggml_cont(ctx0, ggml_transpose(ctx0, kv_new));
-                    cb(kv_new_trans, "kv_new_trans", il);
-
-                    qkv = ggml_mul_mat(ctx0, kv_new_trans, q_trans);
-                    cb(qkv, "qkv", il);
-                } else if(n_seq_tokens > 1) {
-                    struct ggml_tensor * q_decay = ggml_exp(ctx0, ggml_scale(ctx0, q_decay_exp, slope_scale));
-                    cb(q_decay, "q_decay", il);
-                    struct ggml_tensor * k_decay = ggml_exp(ctx0, ggml_scale(ctx0, k_decay_exp, slope_scale));
-                    cb(k_decay, "k_decay", il);
-                    struct ggml_tensor * diag_decay = ggml_exp(ctx0, ggml_scale(ctx0, diag_decay_exp, slope_scale));
-                    cb(diag_decay, "diag_decay", il);
-
-                    struct ggml_tensor * q_s = ggml_mul(ctx0, Qcur, q_decay);
-                    cb(q_s, "q_s", il);
+                    // 计算 q_s (对于 n_seq_tokens == 1, 直接使用 Qcur)
+                    struct ggml_tensor * q_s = (n_seq_tokens != 1) ? ggml_mul(ctx0, Qcur, q_decay) : Qcur;
+                    if (n_seq_tokens != 1) {
+                        cb(q_s, "q_s", il);
+                    }
 
                     struct ggml_tensor * q_s_trans = ggml_cont(ctx0, ggml_permute(ctx0, q_s, 0, 2, 1, 3));
                     cb(q_s_trans, "q_s_trans", il);
@@ -13361,9 +13335,11 @@ struct llm_build_minimax : public llm_graph_context {
                     struct ggml_tensor * qk = ggml_mul_mat(ctx0, k_trans, q_trans);
                     cb(qk, "qk", il);
 
-                    struct ggml_tensor * diag_decay_trans = ggml_cont(ctx0, ggml_permute(ctx0, diag_decay, 2, 0, 1, 3));
-
-                    qk = ggml_mul(ctx0, qk, diag_decay_trans);
+                    // 对于 n_seq_tokens != 1 时应用 diag_decay
+                    if (n_seq_tokens != 1) {
+                        struct ggml_tensor * diag_decay_trans = ggml_cont(ctx0, ggml_permute(ctx0, diag_decay, 2, 0, 1, 3));
+                        qk = ggml_mul(ctx0, qk, diag_decay_trans);
+                    }
                     cb(qk, "qk_s", il);
 
                     struct ggml_tensor * v_trans = ggml_cont(ctx0, ggml_permute(ctx0, Vcur, 1, 2, 0, 3));
@@ -13377,6 +13353,7 @@ struct llm_build_minimax : public llm_graph_context {
 
                     ggml_build_forward_expand(gf, qkv);
 
+                    // 统一计算 kv_new
                     struct ggml_tensor * slopes_neg = ggml_scale(ctx0, slope_rate, -1.0);
                     cb(slopes_neg, "slopes_neg", il);
 
@@ -13387,10 +13364,13 @@ struct llm_build_minimax : public llm_graph_context {
                     cb(block_decay_3d, "block_decay_3d", il);
 
                     struct ggml_tensor * kv_old_s = ggml_mul(ctx0, kv_old, block_decay_3d);
-                    cb(kv_old_s, "kv_old_s", il);
+                        cb(kv_old_s, "kv_old_s", il);
 
-                    struct ggml_tensor * k_after_decay = ggml_mul(ctx0, Kcur, k_decay);
-                    cb(k_after_decay, "k_after_decay", il);
+                    // 对于 n_seq_tokens == 1 直接使用 Kcur，否则使用 k_decay
+                    struct ggml_tensor * k_after_decay = (n_seq_tokens != 1) ? ggml_mul(ctx0, Kcur, k_decay) : Kcur;
+                    if (n_seq_tokens != 1) {
+                        cb(k_after_decay, "k_after_decay", il);
+                    }
 
                     struct ggml_tensor * k_after_decay_trans = ggml_cont(ctx0, ggml_permute(ctx0, k_after_decay, 1, 2, 0, 3));
                     cb(k_after_decay_trans, "k_after_decay_trans", il);
@@ -13402,7 +13382,6 @@ struct llm_build_minimax : public llm_graph_context {
                     cb(kv_new, "kv_new", il);
                 }
 
-                // TODO: 好像有点问题，需要解决(@qingjun)
                 for (uint64_t s = 0; s < ubatch.n_seqs; s++) {
                     uint64_t seq_id = ubatch.seq_id && ubatch.seq_id[s] ? ubatch.seq_id[s][0] : 0;
                     struct ggml_tensor * kv_old_seq_view = ggml_view_4d(ctx0, kv_cache_tensor, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head*seq_id);
@@ -13418,7 +13397,7 @@ struct llm_build_minimax : public llm_graph_context {
                 // norm
                 struct ggml_tensor * qkv_norm = build_norm(qkv,
                     model.layers[il].attn_norm_2, NULL,
-                    LLM_NORM_RMS, -1);             
+                    LLM_NORM_RMS, il);             
                 cb(qkv_norm, "qkv_norm", il);
 
                 struct ggml_tensor * g = build_lora_mm(model.layers[il].wg, cur);
@@ -13453,7 +13432,7 @@ struct llm_build_minimax : public llm_graph_context {
             // MoE branch
             cur = build_norm(ffn_inp,
                     model.layers[il].ffn_norm, NULL,
-                    LLM_NORM_RMS, -1);     
+                    LLM_NORM_RMS, il);     
             cb(cur, "ffn_norm", il);
 
             residual = cur;

@@ -120,6 +120,69 @@ public:
     const float    f_attn_temp_scale;
 };
 
+class llm_graph_inp_slopes : public llm_graph_input_i {
+public:
+    llm_graph_inp_slopes(const llama_hparams & hparams) : hparams(hparams) {}
+    virtual ~llm_graph_inp_slopes() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * inp_slopes = nullptr;
+
+    const llama_hparams & hparams;
+};
+
+class llm_graph_inp_q_decay : public llm_graph_input_i {
+public:
+    llm_graph_inp_q_decay(const llama_hparams & hparams, ggml_tensor * inp_slopes) : hparams(hparams), inp_slopes(inp_slopes) {}
+    virtual ~llm_graph_inp_q_decay() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * inp_q_decay = nullptr;
+
+    const llama_hparams & hparams;
+    ggml_tensor * inp_slopes;
+};
+
+class llm_graph_inp_k_decay : public llm_graph_input_i {
+public:
+    llm_graph_inp_k_decay(const llama_hparams & hparams, ggml_tensor * inp_slopes) : hparams(hparams), inp_slopes(inp_slopes) {}
+    virtual ~llm_graph_inp_k_decay() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * inp_k_decay = nullptr;
+
+    const llama_hparams & hparams;
+    ggml_tensor * inp_slopes;
+};
+
+class llm_graph_inp_diag_decay : public llm_graph_input_i {
+public:
+    llm_graph_inp_diag_decay(const llama_hparams & hparams, ggml_tensor * inp_slopes) : hparams(hparams), inp_slopes(inp_slopes) {}
+    virtual ~llm_graph_inp_diag_decay() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * inp_diag_decay = nullptr;
+
+    const llama_hparams & hparams;
+    ggml_tensor * inp_slopes;
+};
+
+class llm_graph_inp_seq_ids : public llm_graph_input_i {
+public:
+    llm_graph_inp_seq_ids(const llama_hparams & hparams) : hparams(hparams) {}
+    virtual ~llm_graph_inp_seq_ids() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    ggml_tensor * inp_seq_ids = nullptr;
+
+    const llama_hparams & hparams;
+};
+
 class llm_graph_input_pos_bucket : public llm_graph_input_i {
 public:
     llm_graph_input_pos_bucket(const llama_hparams & hparams) : hparams(hparams) {}
@@ -299,22 +362,6 @@ public:
     ggml_tensor * cross_kq_mask_cnv = nullptr; // F32 [n_outputs_enc, n_batch]
 
     const llama_cross * cross = nullptr;
-};
-
-class llm_graph_input_decay : public llm_graph_input_i {
-public:
-    llm_graph_input_decay(const llama_hparams & hparams) : hparams(hparams) {}
-    virtual ~llm_graph_input_decay() = default;
-
-    void set_input(const llama_ubatch * ubatch) override;
-
-    ggml_tensor * inp_slopes = nullptr;        // F32 [n_head]
-    ggml_tensor * inp_q_decay = nullptr;       // F32 [1, n_batch, n_head]
-    ggml_tensor * inp_k_decay = nullptr;       // F32 [1, n_batch, n_head]
-    ggml_tensor * inp_diag_decay = nullptr;    // F32 [n_batch, n_batch, n_head]
-    ggml_tensor * inp_seq_ids = nullptr;       // I32 [n_seqs]
-
-    const llama_hparams & hparams;
 };
 
 class llm_graph_input_mem_hybrid : public llm_graph_input_i {
@@ -552,10 +599,15 @@ struct llm_graph_context {
     ggml_tensor * build_inp_cls() const;
 
     ggml_tensor * build_inp_cross_embd() const;
-    llm_graph_input_decay * build_inp_decay() const;
     ggml_tensor * build_inp_pos_bucket_enc() const;
     ggml_tensor * build_inp_pos_bucket_dec() const;
     ggml_tensor * build_pos_bias(ggml_tensor * pos_bucket, ggml_tensor * attn_rel_b) const;
+
+    ggml_tensor * build_inp_slopes() const;
+    ggml_tensor * build_inp_q_decay(ggml_tensor * lctx) const;
+    ggml_tensor * build_inp_k_decay(ggml_tensor * lctx) const;
+    ggml_tensor * build_inp_diag_decay(ggml_tensor * lctx) const;
+    ggml_tensor * build_inp_seq_ids() const;
 
     llm_graph_input_mem_hybrid * build_inp_mem_hybrid() const;
 

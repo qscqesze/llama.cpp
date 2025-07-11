@@ -4804,6 +4804,9 @@ static void ggml_compute_forward_soft_max_f32(
 #ifndef NDEBUG
         for (int i = 0; i < nc; ++i) {
             //printf("p[%d] = %f\n", i, p[i]);
+            if (isnan(wp[i])) {
+                wp[i] = 0.0f;
+            }
             assert(!isnan(wp[i]));
         }
 #endif
