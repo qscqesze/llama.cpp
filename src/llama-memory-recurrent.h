@@ -162,6 +162,7 @@ public:
 
     ggml_tensor * get_r_l(int32_t il) const;
     ggml_tensor * get_s_l(int32_t il) const;
+    ggml_tensor * get_kv_l(int32_t il) const;
 
     int32_t s_copy(int i) const;
 

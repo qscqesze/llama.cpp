@@ -13181,8 +13181,10 @@ struct llm_build_wavtokenizer_dec : public llm_graph_context {
 struct llm_build_minimax : public llm_graph_context {
 
     llm_build_minimax(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {
+        const auto * kv_state = static_cast<const llama_memory_recurrent_state *>(mstate);
+        
         int32_t n_tokens = this->n_tokens;
-
+        
         const int64_t n_embd_head = hparams.n_embd_head_v;
         GGML_ASSERT(n_embd_head == hparams.n_embd_head_k);
 
@@ -13191,7 +13193,7 @@ struct llm_build_minimax : public llm_graph_context {
         const int64_t n_seq_max = cparams.n_seq_max;
 
         GGML_ASSERT(n_seqs != 0);
-        // GGML_ASSERT(ubatch.equal_seqs);
+        GGML_ASSERT(ubatch.equal_seqs);
         GGML_ASSERT(ubatch.n_tokens == n_seq_tokens * n_seqs);
 
         struct ggml_tensor * cur;
@@ -13280,9 +13282,7 @@ struct llm_build_minimax : public llm_graph_context {
                 cb(Kcur, "Kcur", il);
                 cb(Vcur, "Vcur", il);
 
-                const auto * kv_state = static_cast<const llama_kv_cache_unified_state *>(mstate);
-                struct ggml_tensor * kv_cache_tensor = kv_state->get_k(ctx0, il);
-                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_cache_tensor, n_embd_head*n_embd_head*n_head, n_seq_max, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, 0);
+                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_state->get_kv_l(il), n_embd_head*n_embd_head*n_head, n_seq_max, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, 0);
                 cb(kv_old, "kv_old_2d", il);
 
                 // optimization for a single sequence
@@ -13291,7 +13291,7 @@ struct llm_build_minimax : public llm_graph_context {
                     cb(kv_old, "kv_old_2d_sel", il);
                 }
 
-                kv_old = ggml_view_4d(ctx0, kv_old, n_embd_head, n_embd_head, n_head, n_seqs, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, 0);
+                kv_old = ggml_view_4d(ctx0, kv_old, n_embd_head, n_embd_head, n_head, n_seqs, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, 0);
                 cb(kv_old, "kv_old", il);
 
                 struct ggml_tensor * qkv = nullptr;
@@ -13384,8 +13384,8 @@ struct llm_build_minimax : public llm_graph_context {
 
                 for (uint64_t s = 0; s < ubatch.n_seqs; s++) {
                     uint64_t seq_id = ubatch.seq_id && ubatch.seq_id[s] ? ubatch.seq_id[s][0] : 0;
-                    struct ggml_tensor * kv_old_seq_view = ggml_view_4d(ctx0, kv_cache_tensor, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head*seq_id);
-                    struct ggml_tensor * kv_new_seq_view = ggml_view_4d(ctx0, kv_new, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_cache_tensor)*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_cache_tensor)*n_embd_head*n_embd_head*n_head*s);
+                    struct ggml_tensor * kv_old_seq_view = ggml_view_4d(ctx0, kv_state->get_kv_l(il), n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head*seq_id);
+                    struct ggml_tensor * kv_new_seq_view = ggml_view_4d(ctx0, kv_new, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head*s);
                     ggml_build_forward_expand(gf, ggml_cpy(ctx0, kv_new_seq_view, kv_old_seq_view));
                 }
 

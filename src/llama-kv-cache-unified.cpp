@@ -753,8 +753,10 @@ ggml_tensor * llama_kv_cache_unified::cpy_k(ggml_context * ctx, ggml_tensor * k_
 
     const int64_t n_tokens = k_cur->ne[2];
 
+    const uint32_t n_copy = std::min<uint32_t>(n_tokens, cells.size() - head_cur);
+
     ggml_tensor * k_view = ggml_view_1d(ctx, k,
-            n_tokens*hparams.n_embd_k_gqa(il),
+            n_copy*hparams.n_embd_k_gqa(il),
             ggml_row_size(k->type, hparams.n_embd_k_gqa(il))*head_cur);
 
     return ggml_cpy(ctx, k_cur, k_view);

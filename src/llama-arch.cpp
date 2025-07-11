@@ -1844,6 +1844,7 @@ const llm_tensor_info & llm_tensor_info_for(llm_tensor tensor) {
 bool llm_arch_is_recurrent(const llm_arch & arch) {
     switch (arch) {
         case LLM_ARCH_MAMBA:
+        case LLM_ARCH_MINIMAXM1:
         case LLM_ARCH_RWKV6:
         case LLM_ARCH_RWKV6QWEN2:
         case LLM_ARCH_RWKV7:

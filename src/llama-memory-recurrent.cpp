@@ -1113,6 +1113,10 @@ ggml_tensor * llama_memory_recurrent_state::get_s_l(int32_t il) const {
     return mem->s_l[il];
 }
 
+ggml_tensor * llama_memory_recurrent_state::get_kv_l(int32_t il) const {
+    return mem->kv_l[il];
+}
+
 int32_t llama_memory_recurrent_state::s_copy(int i) const {
     return  mem->cells[i + mem->head].src0;
 }
