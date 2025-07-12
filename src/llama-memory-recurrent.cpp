@@ -118,11 +118,13 @@ llama_memory_recurrent::llama_memory_recurrent(
     {
         const size_t memory_size_r = size_r_bytes();
         const size_t memory_size_s = size_s_bytes();
+        const size_t memory_size_kv = size_kv_bytes();
 
-        LLAMA_LOG_INFO("%s: KV self size  = %7.2f MiB, R (%s): %7.2f MiB, S (%s): %7.2f MiB\n", __func__,
-                (float)(memory_size_r + memory_size_s) / (1024.0f * 1024.0f),
+        LLAMA_LOG_INFO("%s: KV self size  = %7.2f MiB, R (%s): %7.2f MiB, S (%s): %7.2f MiB, KV (F32): %7.2f MiB\n", __func__,
+                (float)(memory_size_r + memory_size_s + memory_size_kv) / (1024.0f * 1024.0f),
                 ggml_type_name(type_r), (float)memory_size_r / (1024.0f * 1024.0f),
-                ggml_type_name(type_s), (float)memory_size_s / (1024.0f * 1024.0f));
+                ggml_type_name(type_s), (float)memory_size_s / (1024.0f * 1024.0f),
+                (float)memory_size_kv / (1024.0f * 1024.0f));
     }
 }
 
@@ -667,6 +669,18 @@ size_t llama_memory_recurrent::size_r_bytes() const {
     return size_r_bytes;
 }
 
+size_t llama_memory_recurrent::size_kv_bytes() const {
+    size_t size_kv_bytes = 0;
+
+    for (const auto & kv : kv_l) {
+        if (kv != nullptr) {
+            size_kv_bytes += ggml_nbytes(kv);
+        }
+    }
+
+    return size_kv_bytes;
+}
+
 size_t llama_memory_recurrent::size_s_bytes() const {
     size_t size_s_bytes = 0;
 
@@ -781,6 +795,18 @@ void llama_memory_recurrent::state_write_data(llama_io_write_i & io, const std::
             const size_t range_size = range.second - range.first;
             const size_t buf_size = range_size * r_size_row;
             io.write_tensor(r_l[il], range.first * r_size_row, buf_size);
+        }
+    }
+
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (kv_l[il] != nullptr) {
+            const int32_t kv_type_i = (int32_t)kv_l[il]->type;
+            io.write(&kv_type_i, sizeof(kv_type_i));
+            
+            const size_t kv_size = ggml_nbytes(kv_l[il]);
+            io.write(&kv_size, sizeof(kv_size));
+            
+            io.write_tensor(kv_l[il], 0, kv_size);
         }
     }
 
@@ -1039,6 +1065,28 @@ bool llama_memory_recurrent::state_read_data(llama_io_read_i & io, uint32_t cell
                     ggml_backend_tensor_set(s_l[il], io.read(cell_count * s_size_el), dst_offset, cell_count * s_size_el);
                 }
             }
+        }
+    }
+
+    for (uint32_t il = 0; il < n_layer; ++il) {
+        if (kv_l[il] != nullptr) {
+            int32_t kv_type_i_ref;
+            io.read_to(&kv_type_i_ref, sizeof(kv_type_i_ref));
+            const int32_t kv_type_i = (int32_t)kv_l[il]->type;
+            if (kv_type_i != kv_type_i_ref) {
+                LLAMA_LOG_ERROR("%s: mismatched kv type (%d != %d, layer %d)\n", __func__, kv_type_i, kv_type_i_ref, il);
+                return false;
+            }
+            
+            size_t kv_size_ref;
+            io.read_to(&kv_size_ref, sizeof(kv_size_ref));
+            const size_t kv_size = ggml_nbytes(kv_l[il]);
+            if (kv_size != kv_size_ref) {
+                LLAMA_LOG_ERROR("%s: mismatched kv size (%zu != %zu, layer %d)\n", __func__, kv_size, kv_size_ref, il);
+                return false;
+            }
+            
+            ggml_backend_tensor_set(kv_l[il], io.read(kv_size), 0, kv_size);
         }
     }
 

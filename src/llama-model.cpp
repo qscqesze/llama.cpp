@@ -13180,9 +13180,7 @@ struct llm_build_wavtokenizer_dec : public llm_graph_context {
 
 struct llm_build_minimax : public llm_graph_context {
 
-    llm_build_minimax(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {
-        const auto * kv_state = static_cast<const llama_memory_recurrent_state *>(mstate);
-        
+    llm_build_minimax(const llama_model & model, const llm_graph_params & params, ggml_cgraph * gf) : llm_graph_context(params) {        
         int32_t n_tokens = this->n_tokens;
         
         const int64_t n_embd_head = hparams.n_embd_head_v;
@@ -13193,7 +13191,7 @@ struct llm_build_minimax : public llm_graph_context {
         const int64_t n_seq_max = cparams.n_seq_max;
 
         GGML_ASSERT(n_seqs != 0);
-        GGML_ASSERT(ubatch.equal_seqs);
+        // GGML_ASSERT(ubatch.equal_seqs);
         GGML_ASSERT(ubatch.n_tokens == n_seq_tokens * n_seqs);
 
         struct ggml_tensor * cur;
@@ -13203,13 +13201,6 @@ struct llm_build_minimax : public llm_graph_context {
 
         // inp_pos - contains the positions
         struct ggml_tensor * inp_pos = build_inp_pos();
-
-        // slope tensor
-        struct ggml_tensor * slopes = build_inp_slopes();
-        struct ggml_tensor * q_decay_exp = (n_seq_tokens != 1 ? build_inp_q_decay(slopes) : nullptr);
-        struct ggml_tensor * k_decay_exp = (n_seq_tokens != 1 ? build_inp_k_decay(slopes) : nullptr);
-        struct ggml_tensor * diag_decay_exp = (n_seq_tokens != 1 ? build_inp_diag_decay(slopes) : nullptr);
-        struct ggml_tensor * seq_ids = (n_seqs > 1 ? build_inp_seq_ids() : nullptr);
 
         auto * inp_attn = build_attn_inp_kv_unified();
 
@@ -13260,147 +13251,68 @@ struct llm_build_minimax : public llm_graph_context {
                                 model.layers[il].wo, NULL,
                                 q_rope, k_rope, Vcur, nullptr, nullptr, kq_scale, il);
             } else {
-                float slope_scale = (n_layer > 1) ? (1.0 - 1.0 * il / (n_layer - 1) + 1e-5) : 1.0;
-                struct ggml_tensor * slope_rate = ggml_scale(ctx0, slopes, slope_scale);
-                cb(slope_rate, "slope_rate", il);
-
-                cur = ggml_reshape_3d(ctx0, cur, cur->ne[0], n_seq_tokens, n_seqs);
-
+                struct ggml_tensor * cur_orig = cur;
+                
                 struct ggml_tensor * QKVcur = build_lora_mm(model.layers[il].wqkv, cur);
                 cb(QKVcur, "QKVcur", il);
 
                 QKVcur = ggml_silu(ctx0, QKVcur);
                 cb(QKVcur, "QKVcur_silu", il);
 
-                QKVcur = ggml_view_4d(ctx0, QKVcur, n_embd_head * 3, n_head, n_seq_tokens, n_seqs, ggml_element_size(QKVcur)*n_embd_head*3, ggml_element_size(QKVcur)*n_embd_head*3*n_head, ggml_element_size(QKVcur)*n_embd_head*3*n_head*n_seq_tokens, 0);
+                const int64_t qkv_size = n_embd_head * n_head;
+                
+                struct ggml_tensor * Qcur = ggml_view_2d(ctx0, QKVcur,
+                                                        qkv_size, n_tokens,
+                                                        QKVcur->nb[1],
+                                                        0);
+                
+                struct ggml_tensor * Kcur = ggml_view_2d(ctx0, QKVcur,
+                                                        qkv_size, n_tokens,
+                                                        QKVcur->nb[1],
+                                                        qkv_size * ggml_element_size(QKVcur));
+                
+                struct ggml_tensor * Vcur = ggml_view_2d(ctx0, QKVcur,
+                                                        qkv_size, n_tokens,
+                                                        QKVcur->nb[1],
+                                                        2 * qkv_size * ggml_element_size(QKVcur));
 
-                struct ggml_tensor * Qcur = ggml_cont(ctx0, ggml_view_4d(ctx0, QKVcur, n_embd_head, n_head, n_seq_tokens, n_seqs, QKVcur->nb[1], QKVcur->nb[2], QKVcur->nb[3], 0*sizeof(float)*n_embd_head));
-                struct ggml_tensor * Kcur = ggml_cont(ctx0, ggml_view_4d(ctx0, QKVcur, n_embd_head, n_head, n_seq_tokens, n_seqs, QKVcur->nb[1], QKVcur->nb[2], QKVcur->nb[3], 1*sizeof(float)*n_embd_head));
-                struct ggml_tensor * Vcur = ggml_cont(ctx0, ggml_view_4d(ctx0, QKVcur, n_embd_head, n_head, n_seq_tokens, n_seqs, QKVcur->nb[1], QKVcur->nb[2], QKVcur->nb[3], 2*sizeof(float)*n_embd_head));
+                Qcur = ggml_cont(ctx0, Qcur);
+                Kcur = ggml_cont(ctx0, Kcur);
+                Vcur = ggml_cont(ctx0, Vcur);
 
                 cb(Qcur, "Qcur", il);
                 cb(Kcur, "Kcur", il);
                 cb(Vcur, "Vcur", il);
 
-                struct ggml_tensor * kv_old = ggml_view_2d(ctx0, kv_state->get_kv_l(il), n_embd_head*n_embd_head*n_head, n_seq_max, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, 0);
-                cb(kv_old, "kv_old_2d", il);
+                Qcur = ggml_reshape_3d(ctx0, Qcur, n_embd_head, n_head, n_tokens);
+                Kcur = ggml_reshape_3d(ctx0, Kcur, n_embd_head, n_head, n_tokens);
+                Vcur = ggml_reshape_3d(ctx0, Vcur, n_embd_head, n_head, n_tokens);
 
-                // optimization for a single sequence
-                if (n_seqs > 1) {
-                    kv_old = ggml_get_rows(ctx0, kv_old, seq_ids);
-                    cb(kv_old, "kv_old_2d_sel", il);
-                }
+                struct ggml_tensor * q_rope = ggml_rope_ext(
+                    ctx0, Qcur, inp_pos, nullptr,
+                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow
+                );
+                cb(q_rope, "q_rope", il);
 
-                kv_old = ggml_view_4d(ctx0, kv_old, n_embd_head, n_embd_head, n_head, n_seqs, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, 0);
-                cb(kv_old, "kv_old", il);
+                struct ggml_tensor * k_rope = ggml_rope_ext(
+                    ctx0, Kcur, inp_pos, nullptr,
+                    n_rot, rope_type, n_ctx_orig, freq_base, freq_scale,
+                    ext_factor, attn_factor, beta_fast, beta_slow
+                );
+                cb(k_rope, "k_rope", il);
 
-                struct ggml_tensor * qkv = nullptr;
-                struct ggml_tensor * kv_new = nullptr;
-                if (n_seq_tokens >= 1) {
-                    // 计算衰减因子（对于 n_seq_tokens == 1，某些衰减因子为 nullptr）
-                    struct ggml_tensor * q_decay = (n_seq_tokens != 1) ? ggml_exp(ctx0, ggml_scale(ctx0, q_decay_exp, slope_scale)) : nullptr;
-                    struct ggml_tensor * k_decay = (n_seq_tokens != 1) ? ggml_exp(ctx0, ggml_scale(ctx0, k_decay_exp, slope_scale)) : nullptr;
-                    struct ggml_tensor * diag_decay = (n_seq_tokens != 1) ? ggml_exp(ctx0, ggml_scale(ctx0, diag_decay_exp, slope_scale)) : nullptr;
-                    
-                    if (n_seq_tokens != 1) {
-                        q_decay = ggml_clamp(ctx0, q_decay, -10.0f, 10.0f);
-                        k_decay = ggml_clamp(ctx0, k_decay, -10.0f, 10.0f);
-                        diag_decay = ggml_clamp(ctx0, diag_decay, -10.0f, 10.0f);
-                        cb(q_decay, "q_decay", il);
-                        cb(k_decay, "k_decay", il);
-                        cb(diag_decay, "diag_decay", il);
-                    }
+                struct ggml_tensor * qkv = build_attn_mha(gf, q_rope, k_rope, Vcur, nullptr, nullptr, nullptr, kq_scale);
+                cb(qkv, "qkv", il);
 
-                    // 计算 q_s (对于 n_seq_tokens == 1, 直接使用 Qcur)
-                    struct ggml_tensor * q_s = (n_seq_tokens != 1) ? ggml_mul(ctx0, Qcur, q_decay) : Qcur;
-                    if (n_seq_tokens != 1) {
-                        cb(q_s, "q_s", il);
-                    }
+                qkv = ggml_reshape_2d(ctx0, qkv, qkv->ne[0], n_tokens);
 
-                    struct ggml_tensor * q_s_trans = ggml_cont(ctx0, ggml_permute(ctx0, q_s, 0, 2, 1, 3));
-                    cb(q_s_trans, "q_s_trans", il);
-
-                    struct ggml_tensor * kv_old_trans = ggml_cont(ctx0, ggml_transpose(ctx0, kv_old));
-                    cb(kv_old_trans, "kv_old_trans", il);
-
-                    struct ggml_tensor * qkv_none_diag = ggml_mul_mat(ctx0, kv_old_trans, q_s_trans);
-                    cb(qkv_none_diag, "qkv_none_diag", il);
-
-                    struct ggml_tensor * q_trans = ggml_cont(ctx0, ggml_permute(ctx0, Qcur, 0, 2, 1, 3));
-                    cb(q_trans, "q_trans", il);
-
-                    struct ggml_tensor * k_trans = ggml_cont(ctx0, ggml_permute(ctx0, Kcur, 0, 2, 1, 3));
-                    cb(k_trans, "k_trans", il);
-
-                    struct ggml_tensor * qk = ggml_mul_mat(ctx0, k_trans, q_trans);
-                    cb(qk, "qk", il);
-
-                    // 对于 n_seq_tokens != 1 时应用 diag_decay
-                    if (n_seq_tokens != 1) {
-                        struct ggml_tensor * diag_decay_trans = ggml_cont(ctx0, ggml_permute(ctx0, diag_decay, 2, 0, 1, 3));
-                        qk = ggml_mul(ctx0, qk, diag_decay_trans);
-                    }
-                    cb(qk, "qk_s", il);
-
-                    struct ggml_tensor * v_trans = ggml_cont(ctx0, ggml_permute(ctx0, Vcur, 1, 2, 0, 3));
-                    cb(v_trans, "v_trans", il);
-
-                    struct ggml_tensor * qkv_diag = ggml_mul_mat(ctx0, v_trans, qk);
-                    cb(qkv_diag, "qkv_diag", il);
-
-                    qkv = ggml_add(ctx0, qkv_none_diag, qkv_diag);
-                    cb(qkv, "qkv", il);
-
-                    ggml_build_forward_expand(gf, qkv);
-
-                    // 统一计算 kv_new
-                    struct ggml_tensor * slopes_neg = ggml_scale(ctx0, slope_rate, -1.0);
-                    cb(slopes_neg, "slopes_neg", il);
-
-                    struct ggml_tensor * block_decay = ggml_exp(ctx0, slopes_neg);
-                    cb(block_decay, "block_decay", il);
-
-                    struct ggml_tensor * block_decay_3d = ggml_view_3d(ctx0, block_decay, 1, 1, n_head, ggml_element_size(block_decay), ggml_element_size(block_decay), 0);
-                    cb(block_decay_3d, "block_decay_3d", il);
-
-                    struct ggml_tensor * kv_old_s = ggml_mul(ctx0, kv_old, block_decay_3d);
-                        cb(kv_old_s, "kv_old_s", il);
-
-                    // 对于 n_seq_tokens == 1 直接使用 Kcur，否则使用 k_decay
-                    struct ggml_tensor * k_after_decay = (n_seq_tokens != 1) ? ggml_mul(ctx0, Kcur, k_decay) : Kcur;
-                    if (n_seq_tokens != 1) {
-                        cb(k_after_decay, "k_after_decay", il);
-                    }
-
-                    struct ggml_tensor * k_after_decay_trans = ggml_cont(ctx0, ggml_permute(ctx0, k_after_decay, 1, 2, 0, 3));
-                    cb(k_after_decay_trans, "k_after_decay_trans", il);
-
-                    struct ggml_tensor * kv_cur = ggml_mul_mat(ctx0, v_trans, k_after_decay_trans);
-                    cb(kv_cur, "kv_cur", il);
-
-                    kv_new = ggml_add(ctx0, kv_old_s, kv_cur);
-                    cb(kv_new, "kv_new", il);
-                }
-
-                for (uint64_t s = 0; s < ubatch.n_seqs; s++) {
-                    uint64_t seq_id = ubatch.seq_id && ubatch.seq_id[s] ? ubatch.seq_id[s][0] : 0;
-                    struct ggml_tensor * kv_old_seq_view = ggml_view_4d(ctx0, kv_state->get_kv_l(il), n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head*seq_id);
-                    struct ggml_tensor * kv_new_seq_view = ggml_view_4d(ctx0, kv_new, n_embd_head, n_embd_head, n_head, 1, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head, ggml_element_size(kv_state->get_kv_l(il))*n_embd_head*n_embd_head*n_head*s);
-                    ggml_build_forward_expand(gf, ggml_cpy(ctx0, kv_new_seq_view, kv_old_seq_view));
-                }
-
-                qkv = ggml_cont(ctx0, ggml_permute(ctx0, qkv, 0, 2, 1, 3));
-                cb(qkv, "qkv_permuted", il);
-
-                qkv = ggml_view_3d(ctx0, qkv, qkv->ne[0]*qkv->ne[1], qkv->ne[2], qkv->ne[3], ggml_element_size(qkv)*qkv->ne[0]*qkv->ne[1], ggml_element_size(qkv)*qkv->ne[0]*qkv->ne[1]*qkv->ne[2], 0);
-
-                // norm
                 struct ggml_tensor * qkv_norm = build_norm(qkv,
                     model.layers[il].attn_norm_2, NULL,
                     LLM_NORM_RMS, il);             
                 cb(qkv_norm, "qkv_norm", il);
 
-                struct ggml_tensor * g = build_lora_mm(model.layers[il].wg, cur);
+                struct ggml_tensor * g = build_lora_mm(model.layers[il].wg, cur_orig);
                 cb(g, "g", il);
 
                 g = ggml_sigmoid(ctx0, g);
@@ -13410,12 +13322,8 @@ struct llm_build_minimax : public llm_graph_context {
 
                 cur = build_lora_mm(model.layers[il].wo, cur);
                 cb(cur, "attn_out", il);
-
-                cur = ggml_reshape_2d(ctx0, cur, cur->ne[0], n_seq_tokens*n_seqs);
-                cb(cur, "attn_out", il);
             }
             if (il == n_layer - 1) {
-                // skip computing output for unused tokens
                 ggml_tensor * inp_out_ids = build_inp_out_ids();
                 n_tokens = n_outputs;
                 cur   = ggml_get_rows(ctx0,   cur, inp_out_ids);
@@ -14598,6 +14506,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_PLM:
         case LLM_ARCH_CHATGLM:
         case LLM_ARCH_GLM4:
+        case LLM_ARCH_MINIMAXM1:
         case LLM_ARCH_GRANITE:
         case LLM_ARCH_GRANITE_MOE:
         case LLM_ARCH_CHAMELEON:
@@ -14637,7 +14546,6 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_NEMOTRON:
         case LLM_ARCH_EXAONE:
         case LLM_ARCH_MINICPM3:
-        case LLM_ARCH_MINIMAXM1:
         case LLM_ARCH_DOTS1:
             return LLAMA_ROPE_TYPE_NEOX;
 
