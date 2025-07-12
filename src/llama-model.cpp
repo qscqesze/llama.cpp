@@ -13357,7 +13357,6 @@ struct llm_build_minimax : public llm_graph_context {
                     LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il);
             cb(cur, "ffn_moe_out", il);
             
-            residual = ggml_scale(ctx0, residual, hparams.f_residual_scale);
             cb(residual, "residual_scaled_ffn", il);
 
             cur = ggml_add(ctx0, cur, residual);
